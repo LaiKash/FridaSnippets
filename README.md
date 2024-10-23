@@ -1,2 +1,2 @@
 # FridaSnippets
-Some Frida Scripts I build when needed
+1. [Get Info From Class](./getinfofromclass.js): Just to print some info from a calss; fields, methods, constructors, overloads...
