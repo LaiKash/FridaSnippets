@@ -1,3 +1,33 @@
+/**
+* Deterministically detects when a native library is fully loaded by hooking
+ * two internal linker functions: do_dlopen and call_constructor.
+ *
+ * Android's linker loads a .so in two phases:
+ *   1. do_dlopen   — maps the library into memory and resolves symbols
+ *   2. call_constructor — runs .init/.init_array (C++ static initializers, etc.)
+ *
+ * We hook do_dlopen.onLeave to detect when our target library is opening,
+ * then attach call_constructor at that point so it only fires for our target.
+ * The callback is invoked after call_constructor completes, meaning the library
+ * is fully initialized and all exports are safe to hook.
+ *
+ * The callback is deferred via setImmediate to escape the linker thread's
+ * instrumentation lock before calling Interceptor.attach inside it.
+ * When Frida executes a hook, it holds an internal lock on that thread to
+ * safely patch memory. Any attempt to call Interceptor.attach from within
+ * that same hook will try to acquire the same lock, causing a deadlock.
+ * setImmediate schedules the callback on the next tick of Frida's JS event
+ * loop, by which point the linker thread has exited the hook and released
+ * the lock, making it safe to attach new interceptors.
+ *
+ * Symbol resolution tries enumerateSymbols first (full debug symbol table)
+ * and falls back to enumerateExports if the linker simbols are stripped. Symbols
+ * include all internal/debug info while exports only contain what the linker
+ * intentionally exposes to other libraries. On stock Android both work. If both fail
+ * the function throws immediately so you know rather than getting a silent hang.
+ *
+ **/
+
 function waitForLib(name, callback) {
   const already = Process.findModuleByName(name);
   if (already) {
