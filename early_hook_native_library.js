@@ -1,9 +1,13 @@
+'use strict';
+
 /**
-* Deterministically detects when a native library is fully loaded by hooking
+ * waitForLib(name, callback)
+ *
+ * Deterministically detects when a native library is fully loaded by hooking
  * two internal linker functions: do_dlopen and call_constructor.
  *
  * Android's linker loads a .so in two phases:
- *   1. do_dlopen   — maps the library into memory and resolves symbols
+ *   1. do_dlopen        — maps the library into memory and resolves symbols
  *   2. call_constructor — runs .init/.init_array (C++ static initializers, etc.)
  *
  * We hook do_dlopen.onLeave to detect when our target library is opening,
@@ -20,14 +24,11 @@
  * loop, by which point the linker thread has exited the hook and released
  * the lock, making it safe to attach new interceptors.
  *
- * Symbol resolution tries enumerateSymbols first (full debug symbol table)
- * and falls back to enumerateExports if the linker simbols are stripped. Symbols
- * include all internal/debug info while exports only contain what the linker
- * intentionally exposes to other libraries. On stock Android both work. If both fail
- * the function throws immediately so you know rather than getting a silent hang.
+ * Throws if the linker or required symbols can't be resolved.
  *
- **/
-
+ * @param {string}   name      - Library name, e.g. 'xxxxx.so'
+ * @param {function} callback  - Called with the Module object once loaded
+ */
 function waitForLib(name, callback) {
   const already = Process.findModuleByName(name);
   if (already) {
@@ -41,22 +42,19 @@ function waitForLib(name, callback) {
   let do_dlopen = null;
   let call_ctor = null;
 
-  linker.enumerateSymbols().forEach(sym => {
+  let syms = linker.enumerateSymbols();
+  if (!syms.length) {
+    console.log('[waitForLib] no symbols found, trying exports...');
+    syms = linker.enumerateExports();
+  }
+
+  syms.forEach(sym => {
     if (sym.name.indexOf('do_dlopen')        >= 0) do_dlopen = sym.address;
     if (sym.name.indexOf('call_constructor') >= 0) call_ctor  = sym.address;
   });
 
-  // Fallback to exports if symbols are stripped
-  if (!do_dlopen || !call_ctor) {
-    console.log('[waitForLib] symbols incomplete, trying exports...');
-    linker.enumerateExports().forEach(exp => {
-      if (!do_dlopen && exp.name.indexOf('do_dlopen')        >= 0) do_dlopen = exp.address;
-      if (!call_ctor  && exp.name.indexOf('call_constructor') >= 0) call_ctor  = exp.address;
-    });
-  }
-
-  if (!do_dlopen) throw new Error('[waitForLib] do_dlopen not found in linker symbols');
-  if (!call_ctor)  throw new Error('[waitForLib] call_constructor not found in linker symbols');
+  if (!do_dlopen) throw new Error('[waitForLib] do_dlopen not found');
+  if (!call_ctor)  throw new Error('[waitForLib] call_constructor not found');
 
   let ctorListener = null;
   let done         = false;
@@ -83,10 +81,12 @@ function waitForLib(name, callback) {
     }
   });
 
+  console.log(`[waitForLib] watching linker for ${name}...`);
+}
 
-// example
+// ─── Usage example ───────────────────────────────────────────────────────────
 
 waitForLib('xxxx.so', lib => {
-  console.log(`[+] xxx.so @ ${lib.base}`);
+  console.log(`[+] xxxx.so @ ${lib.base}`);
 
 });
