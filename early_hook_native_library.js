@@ -43,23 +43,20 @@ function waitForLib(name, callback) {
         if (s.name.includes('call_constructor')) call_ctor  = s.address;
     });
 
-    if (!do_dlopen) return;
+    if (!do_dlopen || !call_ctor) return;
 
     let ctorListener = null, done = false;
     
     Interceptor.attach(do_dlopen, {
         onEnter(args) {
             try {
-                // Safely read the library path from args[0]
                 if (args[0].isNull()) return;
                 const libPath = args[0].readCString();
                 this._match = !!(libPath && libPath.includes(name));
-            } catch (e) {
-                this._match = false;
-            }
+            } catch (e) { this._match = false; }
         },
         onLeave() {
-            if (!this._match || ctorListener || !call_ctor) return;
+            if (!this._match || ctorListener) return;
             ctorListener = Interceptor.attach(call_ctor, {
                 onEnter() {
                     if (done) return;
