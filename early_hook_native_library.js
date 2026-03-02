@@ -25,63 +25,53 @@
  * the lock, making it safe to attach new interceptors.
  *
  * Throws if the linker or required symbols can't be resolved.
+ * Instead of using x0 directly, we use frida built in so it's working in different archs
  *
  * @param {string}   name      - Library name, e.g. 'xxxxx.so'
  * @param {function} callback  - Called with the Module object once loaded
  */
 function waitForLib(name, callback) {
-  const already = Process.findModuleByName(name);
-  if (already) {
-    callback(already);
-    return;
-  }
+    const already = Process.findModuleByName(name);
+    if (already) { callback(already); return; }
 
-  const linker = Process.findModuleByName('linker64') ?? Process.findModuleByName('linker');
-  if (!linker) throw new Error('[waitForLib] linker not found');
+    const linker = Process.findModuleByName('linker64') ?? Process.findModuleByName('linker');
+    if (!linker) return;
 
-  let do_dlopen = null;
-  let call_ctor = null;
+    let do_dlopen = null, call_ctor = null;
+    linker.enumerateSymbols().forEach(s => {
+        if (s.name.includes('do_dlopen'))        do_dlopen = s.address;
+        if (s.name.includes('call_constructor')) call_ctor  = s.address;
+    });
 
-  let syms = linker.enumerateSymbols();
-  if (!syms.length) {
-    console.log('[waitForLib] no symbols found, trying exports...');
-    syms = linker.enumerateExports();
-  }
+    if (!do_dlopen) return;
 
-  syms.forEach(sym => {
-    if (sym.name.indexOf('do_dlopen')        >= 0) do_dlopen = sym.address;
-    if (sym.name.indexOf('call_constructor') >= 0) call_ctor  = sym.address;
-  });
-
-  if (!do_dlopen) throw new Error('[waitForLib] do_dlopen not found');
-  if (!call_ctor)  throw new Error('[waitForLib] call_constructor not found');
-
-  let ctorListener = null;
-  let done         = false;
-
-  Interceptor.attach(do_dlopen, {
-    onEnter() {
-      const path = this.context.x0.readCString();
-      this._match = !!(path && path.indexOf(name) >= 0);
-    },
-    onLeave() {
-      if (!this._match || ctorListener) return;
-      // do_dlopen has fully returned — safe to attach a new interceptor
-      ctorListener = Interceptor.attach(call_ctor, {
-        onEnter() {
-          if (done) return;
-          const mod = Process.findModuleByName(name);
-          if (!mod) return;
-          done = true;
-          ctorListener.detach();
-          console.log(`[waitForLib] ${name} fully loaded @ ${mod.base}`);
-          setImmediate(() => callback(mod));
+    let ctorListener = null, done = false;
+    
+    Interceptor.attach(do_dlopen, {
+        onEnter(args) {
+            try {
+                // Safely read the library path from args[0]
+                if (args[0].isNull()) return;
+                const libPath = args[0].readCString();
+                this._match = !!(libPath && libPath.includes(name));
+            } catch (e) {
+                this._match = false;
+            }
+        },
+        onLeave() {
+            if (!this._match || ctorListener || !call_ctor) return;
+            ctorListener = Interceptor.attach(call_ctor, {
+                onEnter() {
+                    if (done) return;
+                    const mod = Process.findModuleByName(name);
+                    if (!mod) return;
+                    done = true;
+                    ctorListener.detach();
+                    setImmediate(() => callback(mod));
+                }
+            });
         }
-      });
-    }
-  });
-
-  console.log(`[waitForLib] watching linker for ${name}...`);
+    });
 }
 
 // ─── Usage example ───────────────────────────────────────────────────────────
